@@ -1,6 +1,18 @@
 # nvim-secrets
 
-Masks secrets and keys in Neovim buffers. Masking is display-only: the buffer text never changes, so yanking and saving still use the real value. Secrets are masked in normal and visual mode and shown in insert mode.
+Masks secrets and keys in Neovim buffers. Masking is display-only: the buffer text never changes, so yanking and saving still use the real value. Secrets are masked in normal and visual mode. In insert and replace mode only the line under the cursor is shown; every other line stays masked.
+
+## What this is not
+
+This plugin hides secrets on screen, for example during a screen share or a recording. It does not stop you leaking secrets in code. Detection is best-effort, a secret can show up before the first scan finishes, and the buffer text and anything you save, yank or commit are untouched.
+
+To keep secrets out of your repos, run the scanners it depends on yourself, such as in a pre-commit hook or in CI:
+
+```sh
+ripsecrets                          # scan the working tree
+betterleaks dir .                   # scan the working tree
+betterleaks git .                   # scan a repo's history
+```
 
 ## Detection backends
 
@@ -42,7 +54,7 @@ Install the scanners you want, for example `brew install ripsecrets betterleaks`
   mask_char = "•",
   hl_group = "Comment",
   reveal_cursorline = false,  -- show real text on the cursor line
-  reveal_modes = { "i", "R" }, -- first character of the mode that shows real text
+  reveal_modes = { "i", "R" }, -- modes (first character) that show real text on the cursor line only
   backends = { "lua" },       -- "lua", "ripsecrets", "betterleaks"
   commands = {},              -- e.g. { betterleaks = "/opt/bin/betterleaks" }
   scan_delay = 150,           -- ms after a change before an external scan
