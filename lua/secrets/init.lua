@@ -8,7 +8,7 @@ local defaults = {
   mask_char = "•",
   hl_group = "Comment",
   reveal_cursorline = false, -- show the real text on the cursor line
-  reveal_modes = { "i", "R" }, -- first character of vim.fn.mode() that shows the real text
+  reveal_modes = { "i", "R" }, -- first character of vim.fn.mode() that shows the real text on the cursor line only
   backends = { "lua" }, -- any of "lua", "ripsecrets", "betterleaks"
   commands = {}, -- override executables, e.g. { betterleaks = "/opt/bin/betterleaks" }
   scan_delay = 150, -- ms to wait after a change before running an external scanner
@@ -61,7 +61,6 @@ end
 
 local function active(buf)
   return config.enabled
-    and not revealing()
     and not disabled_bufs[buf]
     and not vim.tbl_contains(config.disabled_filetypes, vim.bo[buf].filetype)
 end
@@ -111,7 +110,7 @@ local function setup_provider()
       return active(buf)
     end,
     on_line = function(_, win, buf, row)
-      if config.reveal_cursorline and win == vim.api.nvim_get_current_win() then
+      if (config.reveal_cursorline or revealing()) and win == vim.api.nvim_get_current_win() then
         if vim.api.nvim_win_get_cursor(win)[1] - 1 == row then
           return
         end
@@ -151,6 +150,20 @@ function M.setup(opts)
       local old, new = vim.v.event.old_mode:sub(1, 1), vim.v.event.new_mode:sub(1, 1)
       if vim.tbl_contains(config.reveal_modes, old) ~= vim.tbl_contains(config.reveal_modes, new) then
         redraw()
+      end
+    end,
+  })
+  local last_row
+  vim.api.nvim_create_autocmd({ "CursorMovedI", "CursorMoved" }, {
+    group = group,
+    callback = function()
+      -- the revealed line follows the cursor, so repaint when it changes lines
+      local row = vim.api.nvim_win_get_cursor(0)[1]
+      if row ~= last_row then
+        last_row = row
+        if revealing() or config.reveal_cursorline then
+          redraw()
+        end
       end
     end,
   })
