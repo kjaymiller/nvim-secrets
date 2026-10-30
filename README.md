@@ -28,6 +28,42 @@ External scanners run on `BufEnter`, `TextChanged` and `InsertLeave`, after `sca
 
 The plugin never passes `--validate` or `--analyze` to betterleaks, so nothing is sent to a provider. Because ripsecrets can't read stdin, the buffer is written to Neovim's private temp directory for the scan and deleted straight after.
 
+## Adding custom patterns to the lua backend
+
+The lua backend has no config option for patterns yet. Its rules live in [`lua/secrets/detect.lua`](lua/secrets/detect.lua), so to add one you edit that file (use `dir = "~/nvim-secrets"` or a fork, see Install).
+
+To mask a token with a distinctive prefix, add an entry to `token_patterns`:
+
+```lua
+local token_patterns = {
+  -- ...
+  { name = "acme-token", pat = [=[\v<acme_[A-Za-z0-9]{32}>]=] },
+}
+```
+
+- `name` is a label for the rule. It isn't used for matching.
+- `pat` is a Vim regex, compiled with `vim.regex`. Start it with `\v` for "very magic" syntax, and wrap it in `[=[ ... ]=]` so backslashes need no escaping.
+- Everything the pattern matches is masked. To mask only part of a match, bracket it with `\zs` and `\ze`. The built-in `uri-password` rule does this to hide the password and leave the URL readable.
+- Use `<` and `>` to anchor word boundaries, so the pattern doesn't fire inside longer strings.
+
+The other rules in the same file:
+
+- `assignment_pat` masks the value in `secret = value` style lines. Add a keyword to its list to cover another name, such as `signing[_-]?key`.
+- `entropy_pat` and the `entropy_threshold` option control the high-entropy string check.
+- `placeholders` lists values that are never masked.
+
+Add a case to `tests/detect_spec.lua` and run it:
+
+```lua
+check("key = acme_" .. string.rep("aB3d", 8), { "acme_" .. string.rep("aB3d", 8) })
+```
+
+```sh
+nvim -l tests/detect_spec.lua
+```
+
+If you'd rather not edit Lua, the `ripsecrets` and `betterleaks` backends bring their own rule sets. See each project's docs for custom rules.
+
 ## Install
 
 lazy.nvim:
