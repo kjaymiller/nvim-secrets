@@ -8,7 +8,8 @@ local defaults = {
   mask_char = "•",
   hl_group = "Comment",
   reveal_cursorline = false, -- show the real text on the cursor line
-  reveal_modes = { "i", "R" }, -- first character of vim.fn.mode() that shows the real text on the cursor line only
+  reveal_modes = { "i", "R" }, -- first character of vim.fn.mode() that shows the real text
+  reveal_scope = "line", -- in reveal_modes: "line" shows only the cursor line, "all" shows the whole buffer
   backends = { "lua" }, -- any of "lua", "ripsecrets", "betterleaks"
   commands = {}, -- override executables, e.g. { betterleaks = "/opt/bin/betterleaks" }
   scan_delay = 150, -- ms to wait after a change before running an external scanner
@@ -61,6 +62,7 @@ end
 
 local function active(buf)
   return config.enabled
+    and not (revealing() and config.reveal_scope == "all")
     and not disabled_bufs[buf]
     and not vim.tbl_contains(config.disabled_filetypes, vim.bo[buf].filetype)
 end

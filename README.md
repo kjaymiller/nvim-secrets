@@ -1,6 +1,6 @@
 # nvim-secrets
 
-Masks secrets and keys in Neovim buffers. Masking is display-only: the buffer text never changes, so yanking and saving still use the real value. Secrets are masked in normal and visual mode. In insert and replace mode only the line under the cursor is shown; every other line stays masked.
+Masks secrets and keys in Neovim buffers. Masking is display-only: the buffer text never changes, so yanking and saving still use the real value. Secrets are masked in normal and visual mode. In insert and replace mode only the line under the cursor is shown by default; set `reveal_scope = "all"` to show the whole buffer instead.
 
 ## What this is not
 
@@ -90,7 +90,8 @@ Install the scanners you want, for example `brew install ripsecrets betterleaks`
   mask_char = "•",
   hl_group = "Comment",
   reveal_cursorline = false,  -- show real text on the cursor line
-  reveal_modes = { "i", "R" }, -- modes (first character) that show real text on the cursor line only
+  reveal_modes = { "i", "R" }, -- modes (first character) that show real text
+  reveal_scope = "line",      -- "line": cursor line only, "all": whole buffer
   backends = { "lua" },       -- "lua", "ripsecrets", "betterleaks"
   commands = {},              -- e.g. { betterleaks = "/opt/bin/betterleaks" }
   scan_delay = 150,           -- ms after a change before an external scan
