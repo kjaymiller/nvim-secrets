@@ -19,6 +19,8 @@ local defaults = {
   disabled_filetypes = {},
 }
 
+M.defaults = defaults -- shared with the bat front end (secrets.bat)
+
 local config = vim.deepcopy(defaults)
 local ns = vim.api.nvim_create_namespace("secrets")
 local disabled_bufs = {}
