@@ -1,6 +1,10 @@
 # nvim-secrets
 
+![bat-secrets hiding keys](./assets/bat-secrets.png)
+
 Masks secrets and keys in Neovim buffers. Masking is display-only: the buffer text never changes, so yanking and saving still use the real value. Secrets are masked in normal and visual mode. In insert and replace mode only the line under the cursor is shown by default; set `reveal_scope = "all"` to show the whole buffer instead.
+
+It also ships a `bat-secrets` command, so the same detection masks what [bat](https://github.com/sharkdp/bat) prints. See [Use with bat](#use-with-bat).
 
 ## What this is not
 
@@ -18,11 +22,11 @@ betterleaks git .                   # scan a repo's history
 
 Pick any combination with `backends`:
 
-| Backend | What it is | Runs |
-| --- | --- | --- |
-| `lua` | Built-in regexes (known token formats, `key = value` assignments, URI passwords, PEM private keys, entropy check). No dependencies. | Instantly, on every redraw |
-| `ripsecrets` | [ripsecrets](https://github.com/sirwart/ripsecrets). Fast, few false positives, only reports random-looking values. | Async, after changes |
-| `betterleaks` | [betterleaks](https://github.com/betterleaks/betterleaks). Large rule set. | Async, after changes |
+| Backend       | What it is                                                                                                                          | Runs                       |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `lua`         | Built-in regexes (known token formats, `key = value` assignments, URI passwords, PEM private keys, entropy check). No dependencies. | Instantly, on every redraw |
+| `ripsecrets`  | [ripsecrets](https://github.com/sirwart/ripsecrets). Fast, few false positives, only reports random-looking values.                 | Async, after changes       |
+| `betterleaks` | [betterleaks](https://github.com/betterleaks/betterleaks). Large rule set.                                                          | Async, after changes       |
 
 External scanners run on `BufEnter`, `TextChanged` and `InsertLeave`, after `scan_delay` ms. Their findings are masked by value, so every copy of a reported secret is hidden and masks survive edits made before the next scan finishes. A missing binary produces one warning and is skipped.
 
@@ -60,6 +64,7 @@ check("key = acme_" .. string.rep("aB3d", 8), { "acme_" .. string.rep("aB3d", 8)
 
 ```sh
 nvim -l tests/detect_spec.lua
+nvim --clean -l tests/bat_spec.lua
 ```
 
 If you'd rather not edit Lua, the `ripsecrets` and `betterleaks` backends bring their own rule sets. See each project's docs for custom rules.
@@ -81,6 +86,31 @@ lazy.nvim:
 For local development, use `dir = "~/nvim-secrets"` in place of the repo name.
 
 Install the scanners you want, for example `brew install ripsecrets betterleaks`.
+
+## Use with bat
+
+`bin/bat-secrets` runs bat with secrets masked, using the same `detect.lua` patterns and scanners as the plugin, so a pattern added once works in both. It needs `nvim` and `bat` on your PATH.
+
+```sh
+ln -s ~/nvim-secrets/bin/bat-secrets ~/.local/bin/bat-secrets
+bat-secrets .env                    # any bat options and files work
+echo 'token = abc123def456' | bat-secrets -l ini
+alias bat=bat-secrets               # optional
+```
+
+bat has no plugin API, so the text is masked before it reaches bat. Highlighting, paging and decorations are unchanged, and the file on disk is never touched. Each secret becomes `mask_char` characters of the same display width, so columns stay aligned. `--version`, `--list-themes` and the other bat modes that don't show files pass straight through.
+
+| Flag                         | Env                         | Default                                                               |
+| ---------------------------- | --------------------------- | --------------------------------------------------------------------- |
+| `--backends lua,betterleaks` | `BAT_SECRETS_BACKENDS`      | `lua`                                                                 |
+| `--mask-char •`              | `BAT_SECRETS_MASK_CHAR`     | `•`                                                                   |
+| `--no-entropy`               |                             | entropy check on                                                      |
+| `--entropy-threshold 4.0`    |                             | `4.0`                                                                 |
+| `--reveal`                   | `BAT_SECRETS=0`             | masking on                                                            |
+|                              | `BAT_SECRETS_<BACKEND>_CMD` | scanner path, e.g. `BAT_SECRETS_BETTERLEAKS_CMD=/opt/bin/betterleaks` |
+|                              | `BAT_SECRETS_BAT`           | `bat`                                                                 |
+
+`bat-secrets --secrets-help` lists them. The scanners run once per file, in the foreground, before bat starts. The plugin's other options (`reveal_*`, `scan_delay`, `disabled_filetypes`) only apply inside Neovim.
 
 ## Options
 
@@ -117,4 +147,5 @@ Install the scanners you want, for example `brew install ripsecrets betterleaks`
 
 ```sh
 nvim -l tests/detect_spec.lua
+nvim --clean -l tests/bat_spec.lua
 ```
