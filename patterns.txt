@@ -1,12 +1,16 @@
 # nvim-secrets rules file
 #
-# Add your own secret rules here. One rule per line. Blank lines and lines
-# starting with `#` are ignored. Copy this file to
-# `~/.config/nvim/secrets-patterns.txt` to have it loaded automatically, or
-# point the plugin and the bat-secrets / rg-secrets commands at it with
-# `patterns_file` / `--patterns-file` / BAT_SECRETS_PATTERNS_FILE /
-# RG_SECRETS_PATTERNS_FILE.
+# This file is the rule set for the lua backend. The plugin ships it and loads
+# it as the base set, so the rules below are active by default. Edit a copy to
+# add or change rules: copy this file to `~/.config/nvim/secrets-patterns.txt`
+# and your rules are merged on top of the shipped ones.
 #
+# Point the plugin and the bat-secrets / rg-secrets commands at another file
+# with `patterns_file` / `--patterns-file` / BAT_SECRETS_PATTERNS_FILE /
+# RG_SECRETS_PATTERNS_FILE. `patterns` / `--patterns` is shorthand for a comma
+# list of `glob` rules.
+#
+# One rule per line. Blank lines and lines starting with `#` are ignored.
 # There are three kinds of rule:
 #
 #   glob <pattern>      mask anything matching a wildcard pattern.
@@ -14,21 +18,45 @@
 #                       (whitespace, quotes, = , : ; ( ) { } < > | /),
 #                       `?` matches a single such character.
 #   keyword <name>      mask the value after `<name> = ` or `<name>: `
-#                       (case-insensitive; add `_`/`-` yourself if you want).
+#                       (case-insensitive). <name> is a Vim regex, so use
+#                       `api[_-]?key` to cover `api_key` and `api-key`.
 #   regex <vim-regex>   a raw Vim "very magic" regex, for anything the other
 #                       two cannot express. Bracket the part to mask with
 #                       \zs and \ze.
 #
 # A bare line with no keyword prefix is treated as a glob.
 
-# --- Examples: uncomment or edit these ---------------------------------------
+# --- Assignment keywords -----------------------------------------------------
+# A secret name left of `=` or `:`, e.g. API_KEY=..., password: ...
+default keyword secret
+default keyword token
+default keyword passw(or)?d
+default keyword passwd
+default keyword api[_-]?key
+default keyword key[_-]?file
+# RSA_KEY_FILE=/path/to/key.pem, KEY_FILE=..., key-file: ...
+default keyword auth
+default keyword credential
+default keyword private[_-]?key
 
-# A token with a distinctive prefix.
+# --- Token formats with a distinctive prefix ---------------------------------
+# Everything the regex matches is masked. `\zs`/`\ze` mask only part of it
+# (see uri-password, which hides the password and leaves the URL readable).
+default regex \v<(AKIA|ASIA)[0-9A-Z]{16}>
+default regex \v<gh[pousr]_[A-Za-z0-9]{36,}>
+default regex \v<github_pat_[A-Za-z0-9_]{22,}>
+default regex \v<xox[baprs]-[A-Za-z0-9-]{10,}>
+default regex \v<[sr]k_(live|test)_[A-Za-z0-9]{16,}>
+default regex \v<sk-ant-[A-Za-z0-9_-]{20,}>
+default regex \v<sk-(proj-)?[A-Za-z0-9_-]{32,}>
+default regex \v<AIza[0-9A-Za-z_-]{35}>
+default regex \v<eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}>
+default regex \v[a-z][a-z0-9+.-]*://[^:/@[:space:]]+:\zs[^@[:space:]/]+\ze\@
+
+# --- Your rules --------------------------------------------------------------
+# Rules without the `default` prefix are yours. They are merged on top of the
+# shipped rules from a copy at ~/.config/nvim/secrets-patterns.txt.
+#
 # glob acme_*
-
-# A variable whose value is a path to a key file.
-# keyword RSA_KEY_FILE
 # keyword signing_key
-
-# A raw regex, e.g. a provider token shape you know.
 # regex \v<myprovider-[A-Za-z0-9]{32}>

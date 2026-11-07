@@ -24,7 +24,7 @@ Pick any combination with `backends`:
 
 | Backend       | What it is                                                                                                                          | Runs                       |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `lua`         | Built-in regexes (known token formats, `key = value` assignments, URI passwords, PEM private keys, entropy check). No dependencies. | Instantly, on every redraw |
+| `lua`         | Rules from [`patterns.txt`](#detection-rules-lua-backend) (known token formats, `key = value` assignments, URI passwords, PEM private keys, entropy check). No dependencies. | Instantly, on every redraw |
 | `ripsecrets`  | [ripsecrets](https://github.com/sirwart/ripsecrets). Fast, few false positives, only reports random-looking values.                 | Async, after changes       |
 | `betterleaks` | [betterleaks](https://github.com/betterleaks/betterleaks). Large rule set.                                                          | Async, after changes       |
 
@@ -32,43 +32,45 @@ External scanners run on `BufEnter`, `TextChanged` and `InsertLeave`, after `sca
 
 The plugin never passes `--validate` or `--analyze` to betterleaks, so nothing is sent to a provider. Because ripsecrets can't read stdin, the buffer is written to Neovim's private temp directory for the scan and deleted straight after.
 
-## Custom detection patterns (lua backend)
+## Detection rules (lua backend)
 
-There are two ways to add your own rules to the lua backend: an editable **rules file**, and a
-config list. Both work in the plugin and in `bat-secrets` and `rg-secrets`.
+The lua backend's rules all live in one plain text file, [`patterns.txt`](patterns.txt). The
+plugin ships it and loads it as the base rule set, so the built-in rules you see there are active
+by default. To change or add rules, make a copy and edit that instead:
 
-### The rules file
+```sh
+cp patterns.txt ~/.config/nvim/secrets-patterns.txt   # then edit it
+```
 
-The easiest way is a plain text file. Copy [`patterns.txt`](patterns.txt) from the repo to
-`~/.config/nvim/secrets-patterns.txt` and edit it. That file is loaded automatically if it exists.
-You can also point at another file with the `patterns_file` option, or `--patterns-file` /
-`BAT_SECRETS_PATTERNS_FILE` / `RG_SECRETS_PATTERNS_FILE` on the commands.
+The copy is loaded automatically if it exists, and its rules are merged on top of the shipped
+ones. Point somewhere else with the `patterns_file` option, or `--patterns-file` /
+`BAT_SECRETS_PATTERNS_FILE` / `RG_SECRETS_PATTERNS_FILE` on the commands. The same rules work in
+the plugin and in `bat-secrets` and `rg-secrets`.
 
 The file has one rule per line. Blank lines and lines starting with `#` are ignored. There are
-three kinds of rule:
+three kinds of rule, and the shipped file uses the first two for the built-ins:
 
 ```
-# glob: mask anything matching a wildcard pattern
-glob acme_*
-glob *_secret_*
+# keyword: mask the value after `<name> = ` or `<name>: ` (case-insensitive)
+#          the name is a Vim regex, so this covers api_key and api-key
+keyword api[_-]?key
 
-# keyword: mask the value after `NAME = ` or `NAME: ` (case-insensitive)
-keyword RSA_KEY_FILE
-keyword signing_key
-
-# regex: a raw Vim "very magic" regex, for anything the other two can't express
+# regex: a raw Vim "very magic" regex, compiled with vim.regex
 #        bracket the part to mask with \zs and \ze
 regex \v<myprovider-[A-Za-z0-9]{32}>
+
+# glob: mask anything matching a wildcard pattern
+#       `*` matches a run of characters up to a separator (whitespace,
+#       quotes, or one of = , : ; ( ) { } < > | /), `?` matches one
+#       such character
+# (a bare line with no keyword prefix is a glob)
+glob acme_*
 ```
 
-A line with no keyword prefix is treated as a `glob`, so a file can be just:
+Rules are additive: your `keyword` and `regex` rules add to the built-in list, and `glob` lines
+add glob rules. Grep the shipped file for `default` to see which lines are built-in.
 
-```
-acme_*
-svc_*
-```
-
-Glob rules:
+Glob rules in detail:
 
 - `*` matches any run of characters up to a separator (whitespace, quotes, or one of `` =,:;(){}<>|/ ``).
 - `?` matches a single such character.
@@ -82,8 +84,8 @@ still applies.
 
 ### The `patterns` option
 
-For a quick rule, set `patterns` in `setup` (a list of globs, same syntax as `glob` lines). It is
-merged with the rules file:
+For a quick rule without a file, set `patterns` in `setup` (a list of globs, same syntax as `glob`
+lines). It is merged with the rules file:
 
 ```lua
 {
@@ -95,25 +97,11 @@ merged with the rules file:
 }
 ```
 
-### How the built-in rules work
+### What stays in Lua
 
-If a rule is not expressive enough, the built-in rules live in [`lua/secrets/detect.lua`](lua/secrets/detect.lua) (use `dir = "~/nvim-secrets"` or a fork, see Install). To mask a token with a distinctive prefix, add an entry to `token_patterns`:
+[`lua/secrets/detect.lua`](lua/secrets/detect.lua) holds only the machinery for the rules plus two
+things that are not line rules:
 
-```lua
-local token_patterns = {
-  -- ...
-  { name = "acme-token", pat = [=[\v<acme_[A-Za-z0-9]{32}>]=] },
-}
-```
-
-- `name` is a label for the rule. It isn't used for matching.
-- `pat` is a Vim regex, compiled with `vim.regex`. Start it with `\v` for "very magic" syntax, and wrap it in `[=[ ... ]=]` so backslashes need no escaping.
-- Everything the pattern matches is masked. To mask only part of a match, bracket it with `\zs` and `\ze`. The built-in `uri-password` rule does this to hide the password and leave the URL readable.
-- Use `<` and `>` to anchor word boundaries, so the pattern doesn't fire inside longer strings.
-
-The other rules in the same file:
-
-- `assignment_pat` is built from a keyword list (`secret`, `token`, `password`, `api_key`, `key_file` — so `RSA_KEY_FILE=/path/to/key.pem` is masked — `auth`, `credential`, `private_key`) and masks the value in `secret = value` style lines. A `keyword` rule adds to this list without touching the code.
 - `entropy_pat` and the `entropy_threshold` option control the high-entropy string check.
 - `placeholders` lists values that are never masked.
 
@@ -129,7 +117,8 @@ nvim --clean -l tests/bat_spec.lua
 nvim --clean -l tests/rg_spec.lua
 ```
 
-If you'd rather not edit Lua, the `ripsecrets` and `betterleaks` backends bring their own rule sets. See each project's docs for custom rules.
+If you'd rather not maintain a rules file, the `ripsecrets` and `betterleaks` backends bring their
+own rule sets. See each project's docs for custom rules.
 
 ## Install
 
@@ -217,7 +206,7 @@ The output is captured from rg and masked before it is written, so colours, head
   scan_delay = 150,           -- ms after a change before an external scan
   entropy = true,             -- flag high-entropy quoted strings (lua backend)
   entropy_threshold = 4.0,
-  patterns = {},              -- custom glob patterns, e.g. { "acme_*", "*_secret_*" }
+  patterns = {},              -- custom glob patterns, e.g. { "acme_*", "*_secret_*" } (lua backend)
   patterns_file = nil,        -- rules file (glob/keyword/regex); default: <config>/secrets-patterns.txt
   max_lines = 20000,          -- skip private-key block scanning above this
   disabled_filetypes = {},

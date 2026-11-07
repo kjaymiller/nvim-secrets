@@ -1,33 +1,5 @@
 local M = {}
 
--- Token formats with a distinctive prefix. Patterns are Vim "very magic" regexes.
-local token_patterns = {
-  { name = "aws-access-key", pat = [=[\v<(AKIA|ASIA)[0-9A-Z]{16}>]=] },
-  { name = "github-token", pat = [=[\v<gh[pousr]_[A-Za-z0-9]{36,}>]=] },
-  { name = "github-pat", pat = [=[\v<github_pat_[A-Za-z0-9_]{22,}>]=] },
-  { name = "slack-token", pat = [=[\v<xox[baprs]-[A-Za-z0-9-]{10,}>]=] },
-  { name = "stripe-key", pat = [=[\v<[sr]k_(live|test)_[A-Za-z0-9]{16,}>]=] },
-  { name = "anthropic-key", pat = [=[\v<sk-ant-[A-Za-z0-9_-]{20,}>]=] },
-  { name = "openai-key", pat = [=[\v<sk-(proj-)?[A-Za-z0-9_-]{32,}>]=] },
-  { name = "google-api-key", pat = [=[\v<AIza[0-9A-Za-z_-]{35}>]=] },
-  { name = "jwt", pat = [=[\v<eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}>]=] },
-  { name = "uri-password", pat = [=[\v[a-z][a-z0-9+.-]*://[^:/@[:space:]]+:\zs[^@[:space:]/]+\ze\@]=] },
-}
-
--- Keywords that, when seen left of `=` or `:`, mean the value on the right is a secret. A user's
--- `keyword` rules are appended to this list (see `assignment_pattern`).
-local default_keywords = {
-  "secret",
-  "token",
-  "passw(or)?d",
-  "passwd",
-  "api[_-]?key",
-  "key[_-]?file", -- RSA_KEY_FILE=/path/to/key.pem
-  "auth",
-  "credential",
-  "private[_-]?key",
-}
-
 local entropy_pat = [=[\v["']\zs[A-Za-z0-9+/_=-]{20,}\ze["']]=]
 
 local placeholders = { "true", "false", "nil", "null", "none", "changeme", "example", "xxxxxx" }
@@ -39,13 +11,15 @@ local rules_cache -- { signature: string, rules: table }
 -- `*` or `?`, so a wildcard stops at quotes, spaces and punctuation rather than swallowing the line.
 local glob_boundary = [=[^[:space:]"'`=,;:(){}<>*?|\\/]=]
 
----Build the assignment regex, covering the default keywords plus any user `keyword` rules.
+---Build the assignment regex from the `keyword` rules. A keyword is matched left of `=` or `:`
+---(case-insensitive), and the value on the right is masked.
 ---@param keywords string[]
----@return string
+---@return string|nil
 local function assignment_pattern(keywords)
-  local all = vim.deepcopy(default_keywords)
-  vim.list_extend(all, keywords or {})
-  return ([[\v\c(%s)\w*["']?\s*[:=]\s*["']?\zs[^"'[:space:],;()]{6,}]]):format(table.concat(all, "|"))
+  if not keywords or #keywords == 0 then
+    return nil
+  end
+  return ([[\v\c(%s)\w*["']?\s*[:=]\s*["']?\zs[^"'[:space:],;()]{6,}]]):format(table.concat(keywords, "|"))
 end
 
 ---Turn one glob pattern (`*` = any run of non-separator characters, `?` = one) into a Vim regex.
@@ -86,16 +60,13 @@ local function glob_to_pattern(glob)
 end
 
 local function compile(rules)
+  local assignment = assignment_pattern(rules.keywords)
   compiled = {
-    assignment = vim.regex(assignment_pattern(rules.keywords)),
+    assignment = assignment and vim.regex(assignment) or nil,
     entropy = vim.regex(entropy_pat),
-    tokens = {},
     custom = {},
   }
-  for _, t in ipairs(token_patterns) do
-    table.insert(compiled.tokens, vim.regex(t.pat))
-  end
-  -- raw regex rules are used as-is; glob rules are translated first
+  -- `regex` rules are used as-is; `glob` rules are translated first
   local custom = vim.deepcopy(rules.regexes or {})
   vim.list_extend(custom, vim.tbl_map(glob_to_pattern, rules.globs or {}))
   for _, pat in ipairs(custom) do
@@ -148,7 +119,8 @@ end
 
 ---Parse a rules file into `{ globs, keywords, regexes }`. One rule per line; blank lines and
 ---lines starting with `#` are ignored. A line is `glob <pattern>`, `keyword <name>`,
----`regex <vim-regex>`, or a bare pattern (treated as a glob).
+---`regex <vim-regex>`, or a bare pattern (treated as a glob). An optional leading `default` token
+---is accepted and ignored (the shipped file uses it to mark the built-in rules).
 ---@param path string
 ---@return { globs: string[], keywords: string[], regexes: string[] }
 function M.load_rules_file(path)
@@ -160,6 +132,7 @@ function M.load_rules_file(path)
   for line in f:lines() do
     local text = vim.trim(line)
     if text ~= "" and text:sub(1, 1) ~= "#" then
+      text = text:gsub("^default%s+", "") -- optional marker on built-in rules
       local kind, body = text:match("^(%w+)%s+(.*)$")
       if kind == "glob" and body ~= "" then
         table.insert(rules.globs, body)
@@ -179,9 +152,9 @@ function M.load_rules_file(path)
   return rules
 end
 
----Default rules file location, used when one exists. Kept simple: a single path under the user's
----config directory. `vim.fn.stdpath("config")` is `~/.config/nvim` normally, so this resolves to
----`~/.config/nvim/secrets-patterns.txt` alongside the user's Neovim config.
+---Default rules file location, used when one exists. A single path under the user's config
+---directory: `vim.fn.stdpath("config")` is normally `~/.config/nvim`, so this is
+---`~/.config/nvim/secrets-patterns.txt`.
 ---@return string|nil
 function M.default_rules_file()
   local path = vim.fs.joinpath(vim.fn.stdpath("config"), "secrets-patterns.txt")
@@ -189,6 +162,14 @@ function M.default_rules_file()
     return path
   end
   return nil
+end
+
+---Rules file shipped with the plugin. This is the base rule set: the built-in token formats
+---(AWS, GitHub, ... as `regex` rules) and assignment keywords (`keyword` rules) live in this file
+---rather than in Lua, so they can be edited in one place. Located next to this module.
+---@return string
+function M.builtin_rules_file()
+  return vim.fs.joinpath(vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h"), "patterns.txt")
 end
 
 ---@param dst { globs: string[], keywords: string[], regexes: string[] }
@@ -199,26 +180,36 @@ local function merge_rules(dst, src)
   vim.list_extend(dst.regexes, src.regexes)
 end
 
----Merge `config.patterns` (globs) with the rules in `config.patterns_file` and, if present, the
----default rules file. The result is cached by the inputs, so mutating a config table (as the
----front ends and tests do) is still picked up, while per-line calls don't re-read files.
+---Build the effective rule set: the plugin's built-in rules, then `config.patterns_file` if
+---given, then the default rules file if it exists, then the `config.patterns` globs. Later rules
+---add to earlier ones. Cached by the inputs, so `find` doesn't re-read files per line while a
+---changed config (as the front ends and tests use) is still picked up.
 ---@param config table
 ---@return { globs: string[], keywords: string[], regexes: string[] }
 function M.resolve_rules(config)
   local globs = config.patterns or {}
   local file = config.patterns_file
   local default = M.default_rules_file()
-  local signature = table.concat(globs, "\0") .. "\1" .. (file or "") .. "\2" .. (default or "")
+  local builtin = M.builtin_rules_file()
+  local signature = builtin
+    .. "\1"
+    .. (file or "")
+    .. "\2"
+    .. (default or "")
+    .. "\3"
+    .. table.concat(globs, "\0")
   if rules_cache and rules_cache.signature == signature then
     return rules_cache.rules
   end
-  local rules = { globs = vim.deepcopy(globs), keywords = {}, regexes = {} }
+  local rules = { globs = {}, keywords = {}, regexes = {} }
+  merge_rules(rules, M.load_rules_file(builtin))
   if file then
     merge_rules(rules, M.load_rules_file(file))
   end
   if default then
     merge_rules(rules, M.load_rules_file(default))
   end
+  vim.list_extend(rules.globs, globs)
   rules_cache = { signature = signature, rules = rules }
   return rules
 end
@@ -241,17 +232,16 @@ function M.find(line, opts)
     end
   end
 
-  for _, re in ipairs(compiled.tokens) do
-    each_match(re, line, add)
-  end
   for _, re in ipairs(compiled.custom) do
     each_match(re, line, add)
   end
-  each_match(compiled.assignment, line, function(s, e)
-    if line:sub(e + 1, e + 1) ~= "(" then -- a function call, not a literal
-      add(s, e)
-    end
-  end)
+  if compiled.assignment then
+    each_match(compiled.assignment, line, function(s, e)
+      if line:sub(e + 1, e + 1) ~= "(" then -- a function call, not a literal
+        add(s, e)
+      end
+    end)
+  end
   if opts.entropy then
     each_match(compiled.entropy, line, function(s, e)
       if M.entropy(line:sub(s + 1, e)) >= opts.entropy_threshold then

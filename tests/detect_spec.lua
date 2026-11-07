@@ -89,12 +89,13 @@ vim.fn.writefile({
   "glob bare_*",
   "keyword MY_CUSTOM_SECRET",
   "regex \\v<zp-[A-Za-z0-9]{8}>",
+  "default regex \\v<builtinshape-[0-9]{4}>",
 }, patterns_path)
 local loaded = detect.load_rules_file(patterns_path)
 local expected_rules = {
   globs = { "acme_*", "*_token", "bare_*" },
   keywords = { "MY_CUSTOM_SECRET" },
-  regexes = { "\\v<zp-[A-Za-z0-9]{8}>" },
+  regexes = { "\\v<zp-[A-Za-z0-9]{8}>", "\\v<builtinshape-[0-9]{4}>" },
 }
 if vim.inspect(loaded) ~= vim.inspect(expected_rules) then
   failures = failures + 1
@@ -124,20 +125,26 @@ check_rules("a zp-deadbeef b", { "zp-deadbeef" })
 check_rules("a zp-dead b", {})
 os.remove(patterns_path)
 
--- resolve_rules merges the shorthand `patterns` list with the file
+-- resolve_rules merges the built-in rules, the shorthand `patterns` list and the file
 local resolved_path = vim.fn.tempname()
 vim.fn.writefile({ "keyword FILE_KEY", "customsekrit_*" }, resolved_path)
 local resolved = detect.resolve_rules({ patterns = { "acme_*" }, patterns_file = resolved_path })
-local expected_resolved = { globs = { "acme_*", "customsekrit_*" }, keywords = { "FILE_KEY" }, regexes = {} }
-if vim.inspect(resolved) ~= vim.inspect(expected_resolved) then
+local function has(list, value)
+  return vim.tbl_contains(list, value)
+end
+if
+  not (has(resolved.globs, "acme_*") and has(resolved.globs, "customsekrit_*") and has(resolved.keywords, "FILE_KEY"))
+  or not has(resolved.keywords, "secret")
+  or not has(resolved.regexes, [=[\v<(AKIA|ASIA)[0-9A-Z]{16}>]=])
+then
   failures = failures + 1
   print("FAIL resolve_rules: " .. vim.inspect(resolved))
 end
 os.remove(resolved_path)
 
--- the shipped example file parses (all rules are commented out, so it is empty)
-local example_rules = detect.load_rules_file(vim.fn.getcwd() .. "/patterns.txt")
-if vim.inspect(example_rules) ~= vim.inspect({ globs = {}, keywords = {}, regexes = {} }) then
+-- the shipped file carries the built-in rules: 9 keywords and 10 token regexes
+local example_rules = detect.load_rules_file(detect.builtin_rules_file())
+if #example_rules.keywords < 9 or #example_rules.regexes < 10 then
   failures = failures + 1
   print("FAIL shipped patterns.txt: " .. vim.inspect(example_rules))
 end
