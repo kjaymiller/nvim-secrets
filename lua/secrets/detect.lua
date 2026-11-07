@@ -14,19 +14,39 @@ local token_patterns = {
   { name = "uri-password", pat = [=[\v[a-z][a-z0-9+.-]*://[^:/@[:space:]]+:\zs[^@[:space:]/]+\ze\@]=] },
 }
 
--- `secret = "value"`, `API_KEY: value`, `export TOKEN=value` ...
-local assignment_pat = [=[\v\c(secret|token|passw(or)?d|passwd|api[_-]?key|auth|credential|private[_-]?key)\w*["']?\s*[:=]\s*["']?\zs[^"'[:space:],;()]{6,}]=]
+-- Keywords that, when seen left of `=` or `:`, mean the value on the right is a secret. A user's
+-- `keyword` rules are appended to this list (see `assignment_pattern`).
+local default_keywords = {
+  "secret",
+  "token",
+  "passw(or)?d",
+  "passwd",
+  "api[_-]?key",
+  "key[_-]?file", -- RSA_KEY_FILE=/path/to/key.pem
+  "auth",
+  "credential",
+  "private[_-]?key",
+}
 
 local entropy_pat = [=[\v["']\zs[A-Za-z0-9+/_=-]{20,}\ze["']]=]
 
 local placeholders = { "true", "false", "nil", "null", "none", "changeme", "example", "xxxxxx" }
 
 local compiled
-local pattern_cache -- { signature: string, patterns: string[] }
+local rules_cache -- { signature: string, rules: table }
 
 -- Characters that separate a token from the text around it. Used when a glob pattern contains a
 -- `*` or `?`, so a wildcard stops at quotes, spaces and punctuation rather than swallowing the line.
 local glob_boundary = [=[^[:space:]"'`=,;:(){}<>*?|\\/]=]
+
+---Build the assignment regex, covering the default keywords plus any user `keyword` rules.
+---@param keywords string[]
+---@return string
+local function assignment_pattern(keywords)
+  local all = vim.deepcopy(default_keywords)
+  vim.list_extend(all, keywords or {})
+  return ([[\v\c(%s)\w*["']?\s*[:=]\s*["']?\zs[^"'[:space:],;()]{6,}]]):format(table.concat(all, "|"))
+end
 
 ---Turn one glob pattern (`*` = any run of non-separator characters, `?` = one) into a Vim regex.
 ---The match is anchored with `<`/`>` word boundaries when the glob starts/ends with a word
@@ -65,13 +85,21 @@ local function glob_to_pattern(glob)
   return table.concat(out)
 end
 
-local function compile(patterns)
-  compiled = { assignment = vim.regex(assignment_pat), entropy = vim.regex(entropy_pat), tokens = {}, custom = {} }
+local function compile(rules)
+  compiled = {
+    assignment = vim.regex(assignment_pattern(rules.keywords)),
+    entropy = vim.regex(entropy_pat),
+    tokens = {},
+    custom = {},
+  }
   for _, t in ipairs(token_patterns) do
     table.insert(compiled.tokens, vim.regex(t.pat))
   end
-  for _, glob in ipairs(patterns or {}) do
-    local ok, re = pcall(vim.regex, glob_to_pattern(glob))
+  -- raw regex rules are used as-is; glob rules are translated first
+  local custom = vim.deepcopy(rules.regexes or {})
+  vim.list_extend(custom, vim.tbl_map(glob_to_pattern, rules.globs or {}))
+  for _, pat in ipairs(custom) do
+    local ok, re = pcall(vim.regex, pat)
     if ok then
       table.insert(compiled.custom, re)
     end
@@ -118,42 +146,81 @@ local function each_match(re, line, fn)
   end
 end
 
----Read a patterns file: one glob per line, `#` comments and blank lines ignored.
+---Parse a rules file into `{ globs, keywords, regexes }`. One rule per line; blank lines and
+---lines starting with `#` are ignored. A line is `glob <pattern>`, `keyword <name>`,
+---`regex <vim-regex>`, or a bare pattern (treated as a glob).
 ---@param path string
----@return string[]
-function M.load_patterns_file(path)
+---@return { globs: string[], keywords: string[], regexes: string[] }
+function M.load_rules_file(path)
+  local rules = { globs = {}, keywords = {}, regexes = {} }
   local f = io.open(vim.fn.expand(path), "r")
   if not f then
-    return {}
+    return rules
   end
-  local patterns = {}
   for line in f:lines() do
-    local pat = vim.trim(line)
-    if pat ~= "" and pat:sub(1, 1) ~= "#" then
-      table.insert(patterns, pat)
+    local text = vim.trim(line)
+    if text ~= "" and text:sub(1, 1) ~= "#" then
+      local kind, body = text:match("^(%w+)%s+(.*)$")
+      if kind == "glob" and body ~= "" then
+        table.insert(rules.globs, body)
+      elseif kind == "keyword" and body ~= "" then
+        table.insert(rules.keywords, body)
+      elseif kind == "regex" and body ~= "" then
+        table.insert(rules.regexes, body)
+      elseif kind and vim.tbl_contains({ "glob", "keyword", "regex" }, kind) then
+        -- an empty rule of a known kind, ignore
+      else
+        -- no recognised prefix: the whole line is a glob
+        table.insert(rules.globs, text)
+      end
     end
   end
   f:close()
-  return patterns
+  return rules
 end
 
----Merge `config.patterns` with the patterns in `config.patterns_file` (if any). The merged list
----is cached by the `patterns`/`patterns_file` inputs, so mutating a config table (as the front
----ends and tests do) is still picked up, while per-line calls don't re-read the file.
+---Default rules file location, used when one exists. Kept simple: a single path under the user's
+---config directory. `vim.fn.stdpath("config")` is `~/.config/nvim` normally, so this resolves to
+---`~/.config/nvim/secrets-patterns.txt` alongside the user's Neovim config.
+---@return string|nil
+function M.default_rules_file()
+  local path = vim.fs.joinpath(vim.fn.stdpath("config"), "secrets-patterns.txt")
+  if vim.uv.fs_stat(vim.fn.expand(path)) then
+    return path
+  end
+  return nil
+end
+
+---@param dst { globs: string[], keywords: string[], regexes: string[] }
+---@param src { globs: string[], keywords: string[], regexes: string[] }
+local function merge_rules(dst, src)
+  vim.list_extend(dst.globs, src.globs)
+  vim.list_extend(dst.keywords, src.keywords)
+  vim.list_extend(dst.regexes, src.regexes)
+end
+
+---Merge `config.patterns` (globs) with the rules in `config.patterns_file` and, if present, the
+---default rules file. The result is cached by the inputs, so mutating a config table (as the
+---front ends and tests do) is still picked up, while per-line calls don't re-read files.
 ---@param config table
----@return string[]
-function M.resolve_patterns(config)
-  local patterns = config.patterns or {}
-  local signature = table.concat(patterns, "\0") .. "\1" .. (config.patterns_file or "")
-  if pattern_cache and pattern_cache.signature == signature then
-    return pattern_cache.patterns
+---@return { globs: string[], keywords: string[], regexes: string[] }
+function M.resolve_rules(config)
+  local globs = config.patterns or {}
+  local file = config.patterns_file
+  local default = M.default_rules_file()
+  local signature = table.concat(globs, "\0") .. "\1" .. (file or "") .. "\2" .. (default or "")
+  if rules_cache and rules_cache.signature == signature then
+    return rules_cache.rules
   end
-  local merged = vim.deepcopy(patterns)
-  if config.patterns_file then
-    vim.list_extend(merged, M.load_patterns_file(config.patterns_file))
+  local rules = { globs = vim.deepcopy(globs), keywords = {}, regexes = {} }
+  if file then
+    merge_rules(rules, M.load_rules_file(file))
   end
-  pattern_cache = { signature = signature, patterns = merged }
-  return merged
+  if default then
+    merge_rules(rules, M.load_rules_file(default))
+  end
+  rules_cache = { signature = signature, rules = rules }
+  return rules
 end
 
 ---Find secret-looking spans in one line.
@@ -161,10 +228,10 @@ end
 ---@param opts { entropy: boolean, entropy_threshold: number, patterns?: string[] }
 ---@return { [1]: integer, [2]: integer }[] spans 0-based byte [start, end) pairs, sorted and non-overlapping
 function M.find(line, opts)
-  local patterns = M.resolve_patterns(opts)
-  local signature = table.concat(patterns, "\0")
+  local rules = M.resolve_rules(opts)
+  local signature = table.concat(rules.globs, "\0") .. "\3" .. table.concat(rules.keywords, "\0") .. "\3" .. table.concat(rules.regexes, "\0")
   if not compiled or compiled.signature ~= signature then
-    compile(patterns)
+    compile(rules)
     compiled.signature = signature
   end
   local spans = {}

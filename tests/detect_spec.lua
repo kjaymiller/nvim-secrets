@@ -22,6 +22,11 @@ end
 
 check("key = AKIAIOSFODNN7EXAMPLE", { "AKIAIOSFODNN7EXAMPLE" })
 check("export API_KEY=abc123def456", { "abc123def456" })
+check("RSA_KEY_FILE=/home/u/.ssh/id_rsa", { "/home/u/.ssh/id_rsa" })
+check("RSA_KEY_FILE=~/.ssh/id_rsa", { "~/.ssh/id_rsa" })
+check([[export RSA_KEY_FILE="key.pem"]], { "key.pem" })
+check("MY_RSA_KEY_FILE=/etc/key.pem", { "/etc/key.pem" })
+check("KEY_FILE=/etc/x.pem", { "/etc/x.pem" })
 check([[password: "hunter2hunter2"]], { "hunter2hunter2" })
 check("token = os.getenv('TOKEN')", {})
 check("password = $PASSWORD", {})
@@ -74,25 +79,82 @@ check_pat("one two", { "*" }, { "one", "two" })
 -- no patterns behaves exactly as before
 check_pat("key = AKIAIOSFODNN7EXAMPLE", {}, { "AKIAIOSFODNN7EXAMPLE" })
 
--- patterns file loading
+-- rules file loading
 local patterns_path = vim.fn.tempname()
-vim.fn.writefile({ "# comment", "", "acme_*", "  *_token  " }, patterns_path)
-local loaded = detect.load_patterns_file(patterns_path)
-if vim.inspect(loaded) ~= vim.inspect({ "acme_*", "*_token" }) then
+vim.fn.writefile({
+  "# comment",
+  "",
+  "acme_*",
+  "  *_token  ",
+  "glob bare_*",
+  "keyword MY_CUSTOM_SECRET",
+  "regex \\v<zp-[A-Za-z0-9]{8}>",
+}, patterns_path)
+local loaded = detect.load_rules_file(patterns_path)
+local expected_rules = {
+  globs = { "acme_*", "*_token", "bare_*" },
+  keywords = { "MY_CUSTOM_SECRET" },
+  regexes = { "\\v<zp-[A-Za-z0-9]{8}>" },
+}
+if vim.inspect(loaded) ~= vim.inspect(expected_rules) then
   failures = failures + 1
-  print("FAIL patterns file: " .. vim.inspect(loaded))
+  print("FAIL load_rules_file: " .. vim.inspect(loaded))
 end
+
+-- a rules file resolves through find: globs, keywords and regexes all apply
+local function text_rules(line, config)
+  local out = {}
+  for _, s in ipairs(detect.find(line, vim.tbl_extend("force", { entropy = false, entropy_threshold = 4.0 }, config))) do
+    table.insert(out, line:sub(s[1] + 1, s[2]))
+  end
+  return out
+end
+local rules_config = { entropy = false, entropy_threshold = 4.0, patterns_file = patterns_path }
+local function check_rules(line, expected)
+  local got = text_rules(line, rules_config)
+  if vim.inspect(got) ~= vim.inspect(expected) then
+    failures = failures + 1
+    print(("FAIL %q with rules file\n  expected %s\n  got      %s"):format(line, vim.inspect(expected), vim.inspect(got)))
+  end
+end
+check_rules("a acme_1234567890abcdef b", { "acme_1234567890abcdef" })
+check_rules("a bare_xyz b", { "bare_xyz" })
+check_rules("MY_CUSTOM_SECRET=abcdef123456", { "abcdef123456" })
+check_rules("a zp-deadbeef b", { "zp-deadbeef" })
+check_rules("a zp-dead b", {})
 os.remove(patterns_path)
 
--- patterns_file resolves through find
+-- resolve_rules merges the shorthand `patterns` list with the file
 local resolved_path = vim.fn.tempname()
-vim.fn.writefile({ "customsekrit_*" }, resolved_path)
-local resolved = detect.resolve_patterns({ patterns = { "acme_*" }, patterns_file = resolved_path })
-if vim.inspect(resolved) ~= vim.inspect({ "acme_*", "customsekrit_*" }) then
+vim.fn.writefile({ "keyword FILE_KEY", "customsekrit_*" }, resolved_path)
+local resolved = detect.resolve_rules({ patterns = { "acme_*" }, patterns_file = resolved_path })
+local expected_resolved = { globs = { "acme_*", "customsekrit_*" }, keywords = { "FILE_KEY" }, regexes = {} }
+if vim.inspect(resolved) ~= vim.inspect(expected_resolved) then
   failures = failures + 1
-  print("FAIL resolve_patterns: " .. vim.inspect(resolved))
+  print("FAIL resolve_rules: " .. vim.inspect(resolved))
 end
 os.remove(resolved_path)
+
+-- the shipped example file parses (all rules are commented out, so it is empty)
+local example_rules = detect.load_rules_file(vim.fn.getcwd() .. "/patterns.txt")
+if vim.inspect(example_rules) ~= vim.inspect({ globs = {}, keywords = {}, regexes = {} }) then
+  failures = failures + 1
+  print("FAIL shipped patterns.txt: " .. vim.inspect(example_rules))
+end
+
+-- default rules file is picked up when present
+local default_path = vim.fs.joinpath(vim.fn.stdpath("config"), "secrets-patterns.txt")
+vim.fn.writefile({ "keyword DEFAULT_FILE_KEY" }, default_path)
+local default_line = "DEFAULT_FILE_KEY=abcdef123456"
+local default_masked = {}
+for _, s in ipairs(detect.find(default_line, { entropy = false, entropy_threshold = 4.0 })) do
+  default_masked[#default_masked + 1] = default_line:sub(s[1] + 1, s[2])
+end
+if vim.inspect(default_masked) ~= vim.inspect({ "abcdef123456" }) then
+  failures = failures + 1
+  print("FAIL default rules file: " .. vim.inspect(default_masked))
+end
+os.remove(default_path)
 
 local lines = { "a", "-----BEGIN RSA PRIVATE KEY-----", "MIIE", "abc", "-----END RSA PRIVATE KEY-----", "b" }
 local inside = detect.private_key_lines(lines)

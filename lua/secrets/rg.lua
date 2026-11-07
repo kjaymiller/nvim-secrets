@@ -23,7 +23,8 @@ Secrets options (consumed here, everything else goes to rg):
   --no-entropy           Disable the entropy check (lua backend)
   --entropy-threshold N  Bits per character that count as high entropy (default: 4.0)
   --patterns LIST        Comma list of custom glob patterns, e.g. "acme_*,*_secret"
-  --patterns-file PATH   File of glob patterns, one per line, `#` for comments
+  --patterns-file PATH   Rules file: `glob`/`keyword`/`regex` lines (default
+                         ~/.config/nvim/secrets-patterns.txt if it exists)
 
 Output is captured from rg and masked before it is printed, so colours, headings, context
 lines and --line-number/--column are kept. --json is masked too (the redundant bytes field

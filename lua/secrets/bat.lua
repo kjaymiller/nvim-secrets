@@ -46,7 +46,8 @@ Secrets options (consumed here, everything else goes to bat):
   --no-entropy           Disable the entropy check (lua backend)
   --entropy-threshold N  Bits per character that count as high entropy (default: 4.0)
   --patterns LIST        Comma list of custom glob patterns, e.g. "acme_*,*_secret"
-  --patterns-file PATH   File of glob patterns, one per line, `#` for comments
+  --patterns-file PATH   Rules file: `glob`/`keyword`/`regex` lines (default
+                         ~/.config/nvim/secrets-patterns.txt if it exists)
 
 Environment: BAT_SECRETS=0 disables masking; BAT_SECRETS_BACKENDS, BAT_SECRETS_MASK_CHAR,
 BAT_SECRETS_PATTERNS, BAT_SECRETS_PATTERNS_FILE, BAT_SECRETS_<BACKEND>_CMD (e.g.

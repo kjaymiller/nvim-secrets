@@ -34,51 +34,70 @@ The plugin never passes `--validate` or `--analyze` to betterleaks, so nothing i
 
 ## Custom detection patterns (lua backend)
 
-Besides its built-in rules, the lua backend can mask anything matching your own **glob patterns**. Two options feed it, and they combine:
+There are two ways to add your own rules to the lua backend: an editable **rules file**, and a
+config list. Both work in the plugin and in `bat-secrets` and `rg-secrets`.
+
+### The rules file
+
+The easiest way is a plain text file. Copy [`patterns.txt`](patterns.txt) from the repo to
+`~/.config/nvim/secrets-patterns.txt` and edit it. That file is loaded automatically if it exists.
+You can also point at another file with the `patterns_file` option, or `--patterns-file` /
+`BAT_SECRETS_PATTERNS_FILE` / `RG_SECRETS_PATTERNS_FILE` on the commands.
+
+The file has one rule per line. Blank lines and lines starting with `#` are ignored. There are
+three kinds of rule:
+
+```
+# glob: mask anything matching a wildcard pattern
+glob acme_*
+glob *_secret_*
+
+# keyword: mask the value after `NAME = ` or `NAME: ` (case-insensitive)
+keyword RSA_KEY_FILE
+keyword signing_key
+
+# regex: a raw Vim "very magic" regex, for anything the other two can't express
+#        bracket the part to mask with \zs and \ze
+regex \v<myprovider-[A-Za-z0-9]{32}>
+```
+
+A line with no keyword prefix is treated as a `glob`, so a file can be just:
+
+```
+acme_*
+svc_*
+```
+
+Glob rules:
+
+- `*` matches any run of characters up to a separator (whitespace, quotes, or one of `` =,:;(){}<>|/ ``).
+- `?` matches a single such character.
+- Everything else is literal.
+- A pattern that starts or ends with a word character is anchored to word boundaries, so `acme_*`
+  does not fire inside `xacme_y`. A pattern that ends in `*` or `?` is left open at that end, so
+  `key-???` matches a three-character suffix.
+
+Only the part that matches is masked. The usual placeholder guard (`true`, `example`, `$VAR`, ...)
+still applies.
+
+### The `patterns` option
+
+For a quick rule, set `patterns` in `setup` (a list of globs, same syntax as `glob` lines). It is
+merged with the rules file:
 
 ```lua
 {
   "kjaymiller/nvim-secrets",
   opts = {
     patterns = { "acme_*", "*_secret_*", "key-??" },
-    patterns_file = "~/.config/secrets/patterns", -- optional
+    patterns_file = "~/.config/nvim/secrets-patterns.txt", -- optional; this is the default path
   },
 }
 ```
 
-- `patterns` is a list of glob patterns.
-- `patterns_file` points at a file with one pattern per line. Blank lines and lines starting with `#` are ignored. `~` is expanded.
+### How the built-in rules work
 
-In a pattern:
-
-- `*` matches any run of characters up to a separator (whitespace, quotes, or one of `` =,:;(){}<>|/ ``).
-- `?` matches a single such character.
-- Everything else is literal.
-
-A pattern that starts or ends with a word character is anchored to word boundaries, so `acme_*` does not fire inside `xacme_y`. A pattern that ends in `*` or `?` is left open at that end, so `key-???` matches a three-character suffix. Only the glob itself is masked, and the usual placeholder guard (`true`, `example`, `$VAR`, ...) still applies.
-
-Examples:
-
-```lua
-patterns = {
-  "acme_*",        -- acme_1234567890abcdef
-  "*_secret_*",    -- abc_secret_xyz
-  "key-??",        -- key-ab (exactly two characters after `key-`)
-}
-```
-
-```sh
-# ~/.config/secrets/patterns
-# one glob per line
-acme_*
-svc_*
-```
-
-The same patterns work in `bat-secrets` and `rg-secrets`, see below.
-
-### Editing the built-in rules
-
-If a glob is not expressive enough, the built-in rules live in [`lua/secrets/detect.lua`](lua/secrets/detect.lua) (use `dir = "~/nvim-secrets"` or a fork, see Install). To mask a token with a distinctive prefix, add an entry to `token_patterns`:
+If a rule is not expressive enough, the built-in rules live in [`lua/secrets/detect.lua`](lua/secrets/detect.lua) (use `dir = "~/nvim-secrets"` or a fork, see Install). To mask a token with a distinctive prefix, add an entry to `token_patterns`:
 
 ```lua
 local token_patterns = {
@@ -94,7 +113,7 @@ local token_patterns = {
 
 The other rules in the same file:
 
-- `assignment_pat` masks the value in `secret = value` style lines. Add a keyword to its list to cover another name, such as `signing[_-]?key`.
+- `assignment_pat` is built from a keyword list (`secret`, `token`, `password`, `api_key`, `key_file` — so `RSA_KEY_FILE=/path/to/key.pem` is masked — `auth`, `credential`, `private_key`) and masks the value in `secret = value` style lines. A `keyword` rule adds to this list without touching the code.
 - `entropy_pat` and the `entropy_threshold` option control the high-entropy string check.
 - `placeholders` lists values that are never masked.
 
@@ -150,7 +169,7 @@ bat has no plugin API, so the text is masked before it reaches bat. Highlighting
 | `--no-entropy`               |                             | entropy check on                                                      |
 | `--entropy-threshold 4.0`    |                             | `4.0`                                                                 |
 | `--patterns acme_*,svc_*`    | `BAT_SECRETS_PATTERNS`      | none                                                                  |
-| `--patterns-file PATH`       | `BAT_SECRETS_PATTERNS_FILE` | none                                                                  |
+| `--patterns-file PATH`       | `BAT_SECRETS_PATTERNS_FILE` | none (default `~/.config/nvim/secrets-patterns.txt` if present)      |
 | `--reveal`                   | `BAT_SECRETS=0`             | masking on                                                            |
 |                              | `BAT_SECRETS_<BACKEND>_CMD` | scanner path, e.g. `BAT_SECRETS_BETTERLEAKS_CMD=/opt/bin/betterleaks` |
 |                              | `BAT_SECRETS_BAT`           | `bat`                                                                 |
@@ -176,7 +195,7 @@ The output is captured from rg and masked before it is written, so colours, head
 | `--no-entropy`               |                            | entropy check on                                                      |
 | `--entropy-threshold 4.0`    |                            | `4.0`                                                                 |
 | `--patterns acme_*,svc_*`    | `RG_SECRETS_PATTERNS`      | none                                                                  |
-| `--patterns-file PATH`       | `RG_SECRETS_PATTERNS_FILE` | none                                                                  |
+| `--patterns-file PATH`       | `RG_SECRETS_PATTERNS_FILE` | none (default `~/.config/nvim/secrets-patterns.txt` if present)      |
 | `--reveal`                   | `RG_SECRETS=0`             | masking on                                                            |
 |                              | `RG_SECRETS_<BACKEND>_CMD` | scanner path, e.g. `RG_SECRETS_BETTERLEAKS_CMD=/opt/bin/betterleaks`  |
 |                              | `RG_SECRETS_RG`            | `rg`                                                                  |
@@ -199,7 +218,7 @@ The output is captured from rg and masked before it is written, so colours, head
   entropy = true,             -- flag high-entropy quoted strings (lua backend)
   entropy_threshold = 4.0,
   patterns = {},              -- custom glob patterns, e.g. { "acme_*", "*_secret_*" }
-  patterns_file = nil,        -- file of glob patterns, one per line, `#` for comments
+  patterns_file = nil,        -- rules file (glob/keyword/regex); default: <config>/secrets-patterns.txt
   max_lines = 20000,          -- skip private-key block scanning above this
   disabled_filetypes = {},
 }
