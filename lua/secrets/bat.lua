@@ -30,7 +30,7 @@ local bat_passthrough = set({
 }) -- stylua: ignore
 
 -- bat-secrets options that consume the next argument.
-local value_flags = set({ "--backends", "--mask-char", "--entropy-threshold" })
+local value_flags = set({ "--backends", "--mask-char", "--entropy-threshold", "--patterns", "--patterns-file" })
 
 M.help = [[
 bat-secrets: bat with secrets masked (display only, files are never changed)
@@ -38,15 +38,19 @@ bat-secrets: bat with secrets masked (display only, files are never changed)
 Usage: bat-secrets [secrets options] [bat options] [FILE]...
 
 Secrets options (consumed here, everything else goes to bat):
+  --help, -h             Show this help (--secrets-help is an alias)
+  --bat-help             Show bat's own help
   --reveal               Don't mask anything (same as BAT_SECRETS=0)
   --backends LIST        Comma list of: lua, ripsecrets, betterleaks (default: lua)
   --mask-char CHAR       Character used for masking (default: •)
   --no-entropy           Disable the entropy check (lua backend)
   --entropy-threshold N  Bits per character that count as high entropy (default: 4.0)
+  --patterns LIST        Comma list of custom glob patterns, e.g. "acme_*,*_secret"
+  --patterns-file PATH   File of glob patterns, one per line, `#` for comments
 
 Environment: BAT_SECRETS=0 disables masking; BAT_SECRETS_BACKENDS, BAT_SECRETS_MASK_CHAR,
-BAT_SECRETS_<BACKEND>_CMD (e.g. BAT_SECRETS_BETTERLEAKS_CMD) set the same options;
-BAT_SECRETS_BAT picks the bat executable.
+BAT_SECRETS_PATTERNS, BAT_SECRETS_PATTERNS_FILE, BAT_SECRETS_<BACKEND>_CMD (e.g.
+BAT_SECRETS_BETTERLEAKS_CMD) set the same options; BAT_SECRETS_BAT picks the bat executable.
 ]]
 
 local function fail(msg)
@@ -59,6 +63,10 @@ local function set_option(opts, flag, value)
     opts.config.backends = vim.split(value, ",", { plain = true, trimempty = true })
   elseif flag == "--mask-char" then
     opts.config.mask_char = value ~= "" and vim.fn.strcharpart(value, 0, 1) or opts.config.mask_char
+  elseif flag == "--patterns" then
+    opts.config.patterns = vim.split(value, ",", { plain = true, trimempty = true })
+  elseif flag == "--patterns-file" then
+    opts.config.patterns_file = value
   else
     opts.config.entropy_threshold = tonumber(value) or fail("--entropy-threshold needs a number")
   end
@@ -78,6 +86,12 @@ function M.parse(argv)
   end
   if env.BAT_SECRETS_MASK_CHAR then
     set_option(opts, "--mask-char", env.BAT_SECRETS_MASK_CHAR)
+  end
+  if env.BAT_SECRETS_PATTERNS then
+    set_option(opts, "--patterns", env.BAT_SECRETS_PATTERNS)
+  end
+  if env.BAT_SECRETS_PATTERNS_FILE then
+    set_option(opts, "--patterns-file", env.BAT_SECRETS_PATTERNS_FILE)
   end
   for name in pairs(scanners.defs) do
     opts.config.commands[name] = env["BAT_SECRETS_" .. name:upper() .. "_CMD"]
@@ -224,10 +238,35 @@ local function run(bat, args, input)
   return code
 end
 
+-- Does `argv` contain `flag` before the first `--`? Arguments after `--` are data (a file
+-- name), not flags, so they must not trigger help or a passthrough rewrite.
+local function has_flag(argv, flag)
+  for _, a in ipairs(argv) do
+    if a == "--" then
+      return false
+    end
+    if a == flag then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param argv string[]
 ---@return integer exit code
 function M.main(argv)
-  if vim.tbl_contains(argv, "--secrets-help") then
+  if has_flag(argv, "--bat-help") then
+    -- rewrite to --help so the passthrough below runs bat's own help
+    local rewritten = {}
+    for i, a in ipairs(argv) do
+      if a == "--" then
+        vim.list_extend(rewritten, argv, i)
+        break
+      end
+      rewritten[#rewritten + 1] = a == "--bat-help" and "--help" or a
+    end
+    argv = rewritten
+  elseif has_flag(argv, "--help") or has_flag(argv, "-h") or has_flag(argv, "--secrets-help") then
     io.stdout:write(M.help)
     return 0
   end

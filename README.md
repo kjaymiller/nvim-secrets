@@ -4,7 +4,7 @@
 
 Masks secrets and keys in Neovim buffers. Masking is display-only: the buffer text never changes, so yanking and saving still use the real value. Secrets are masked in normal and visual mode. In insert and replace mode only the line under the cursor is shown by default; set `reveal_scope = "all"` to show the whole buffer instead.
 
-It also ships a `bat-secrets` command, so the same detection masks what [bat](https://github.com/sharkdp/bat) prints. See [Use with bat](#use-with-bat).
+It also ships `bat-secrets` and `rg-secrets` commands, so the same detection masks what [bat](https://github.com/sharkdp/bat) and [ripgrep](https://github.com/BurntSushi/ripgrep) print. See [Use with bat](#use-with-bat) and [Use with ripgrep](#use-with-ripgrep).
 
 ## What this is not
 
@@ -32,11 +32,53 @@ External scanners run on `BufEnter`, `TextChanged` and `InsertLeave`, after `sca
 
 The plugin never passes `--validate` or `--analyze` to betterleaks, so nothing is sent to a provider. Because ripsecrets can't read stdin, the buffer is written to Neovim's private temp directory for the scan and deleted straight after.
 
-## Adding custom patterns to the lua backend
+## Custom detection patterns (lua backend)
 
-The lua backend has no config option for patterns yet. Its rules live in [`lua/secrets/detect.lua`](lua/secrets/detect.lua), so to add one you edit that file (use `dir = "~/nvim-secrets"` or a fork, see Install).
+Besides its built-in rules, the lua backend can mask anything matching your own **glob patterns**. Two options feed it, and they combine:
 
-To mask a token with a distinctive prefix, add an entry to `token_patterns`:
+```lua
+{
+  "kjaymiller/nvim-secrets",
+  opts = {
+    patterns = { "acme_*", "*_secret_*", "key-??" },
+    patterns_file = "~/.config/secrets/patterns", -- optional
+  },
+}
+```
+
+- `patterns` is a list of glob patterns.
+- `patterns_file` points at a file with one pattern per line. Blank lines and lines starting with `#` are ignored. `~` is expanded.
+
+In a pattern:
+
+- `*` matches any run of characters up to a separator (whitespace, quotes, or one of `` =,:;(){}<>|/ ``).
+- `?` matches a single such character.
+- Everything else is literal.
+
+A pattern that starts or ends with a word character is anchored to word boundaries, so `acme_*` does not fire inside `xacme_y`. A pattern that ends in `*` or `?` is left open at that end, so `key-???` matches a three-character suffix. Only the glob itself is masked, and the usual placeholder guard (`true`, `example`, `$VAR`, ...) still applies.
+
+Examples:
+
+```lua
+patterns = {
+  "acme_*",        -- acme_1234567890abcdef
+  "*_secret_*",    -- abc_secret_xyz
+  "key-??",        -- key-ab (exactly two characters after `key-`)
+}
+```
+
+```sh
+# ~/.config/secrets/patterns
+# one glob per line
+acme_*
+svc_*
+```
+
+The same patterns work in `bat-secrets` and `rg-secrets`, see below.
+
+### Editing the built-in rules
+
+If a glob is not expressive enough, the built-in rules live in [`lua/secrets/detect.lua`](lua/secrets/detect.lua) (use `dir = "~/nvim-secrets"` or a fork, see Install). To mask a token with a distinctive prefix, add an entry to `token_patterns`:
 
 ```lua
 local token_patterns = {
@@ -65,6 +107,7 @@ check("key = acme_" .. string.rep("aB3d", 8), { "acme_" .. string.rep("aB3d", 8)
 ```sh
 nvim -l tests/detect_spec.lua
 nvim --clean -l tests/bat_spec.lua
+nvim --clean -l tests/rg_spec.lua
 ```
 
 If you'd rather not edit Lua, the `ripsecrets` and `betterleaks` backends bring their own rule sets. See each project's docs for custom rules.
@@ -106,11 +149,39 @@ bat has no plugin API, so the text is masked before it reaches bat. Highlighting
 | `--mask-char •`              | `BAT_SECRETS_MASK_CHAR`     | `•`                                                                   |
 | `--no-entropy`               |                             | entropy check on                                                      |
 | `--entropy-threshold 4.0`    |                             | `4.0`                                                                 |
+| `--patterns acme_*,svc_*`    | `BAT_SECRETS_PATTERNS`      | none                                                                  |
+| `--patterns-file PATH`       | `BAT_SECRETS_PATTERNS_FILE` | none                                                                  |
 | `--reveal`                   | `BAT_SECRETS=0`             | masking on                                                            |
 |                              | `BAT_SECRETS_<BACKEND>_CMD` | scanner path, e.g. `BAT_SECRETS_BETTERLEAKS_CMD=/opt/bin/betterleaks` |
 |                              | `BAT_SECRETS_BAT`           | `bat`                                                                 |
 
-`bat-secrets --secrets-help` lists them. The scanners run once per file, in the foreground, before bat starts. The plugin's other options (`reveal_*`, `scan_delay`, `disabled_filetypes`) only apply inside Neovim.
+`bat-secrets --help` (or `-h`, `--secrets-help`) lists them; `--bat-help` shows bat's own help. The scanners run once per file, in the foreground, before bat starts. The plugin's other options (`reveal_*`, `scan_delay`, `disabled_filetypes`) only apply inside Neovim.
+
+## Use with ripgrep
+
+`bin/rg-secrets` runs ripgrep and masks the matches before they are printed, using the same detection as the plugin. It needs `nvim` and `rg` on your PATH.
+
+```sh
+ln -s ~/nvim-secrets/bin/rg-secrets ~/.local/bin/rg-secrets
+rg-secrets TOKEN file.txt            # any rg options and patterns work
+alias rg=rg-secrets                  # optional
+```
+
+The output is captured from rg and masked before it is written, so colours, headings, context lines and `--line-number`/`--column` are kept. `--json` is masked too (the redundant base64 `bytes` field is dropped). `--version` and other modes that don't print file contents pass straight through.
+
+| Flag                         | Env                        | Default                                                               |
+| ---------------------------- | -------------------------- | --------------------------------------------------------------------- |
+| `--backends lua,betterleaks` | `RG_SECRETS_BACKENDS`      | `lua`                                                                 |
+| `--mask-char •`              | `RG_SECRETS_MASK_CHAR`     | `•`                                                                   |
+| `--no-entropy`               |                            | entropy check on                                                      |
+| `--entropy-threshold 4.0`    |                            | `4.0`                                                                 |
+| `--patterns acme_*,svc_*`    | `RG_SECRETS_PATTERNS`      | none                                                                  |
+| `--patterns-file PATH`       | `RG_SECRETS_PATTERNS_FILE` | none                                                                  |
+| `--reveal`                   | `RG_SECRETS=0`             | masking on                                                            |
+|                              | `RG_SECRETS_<BACKEND>_CMD` | scanner path, e.g. `RG_SECRETS_BETTERLEAKS_CMD=/opt/bin/betterleaks`  |
+|                              | `RG_SECRETS_RG`            | `rg`                                                                  |
+
+`rg-secrets --help` (or `-h`, `--secrets-help`) lists them; `--rg-help` shows rg's own help. Everything else is passed to rg, so `rg-secrets -- --help` searches for the literal text `--help`.
 
 ## Options
 
@@ -127,6 +198,8 @@ bat has no plugin API, so the text is masked before it reaches bat. Highlighting
   scan_delay = 150,           -- ms after a change before an external scan
   entropy = true,             -- flag high-entropy quoted strings (lua backend)
   entropy_threshold = 4.0,
+  patterns = {},              -- custom glob patterns, e.g. { "acme_*", "*_secret_*" }
+  patterns_file = nil,        -- file of glob patterns, one per line, `#` for comments
   max_lines = 20000,          -- skip private-key block scanning above this
   disabled_filetypes = {},
 }
@@ -147,5 +220,7 @@ bat has no plugin API, so the text is masked before it reaches bat. Highlighting
 
 ```sh
 nvim -l tests/detect_spec.lua
+nvim -l tests/ansi_spec.lua
 nvim --clean -l tests/bat_spec.lua
+nvim --clean -l tests/rg_spec.lua
 ```

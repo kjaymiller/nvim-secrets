@@ -7,7 +7,7 @@ local unpack = table.unpack or unpack
 local M = {}
 
 -- rg-secrets options that consume the next argument.
-local value_flags = { ["--backends"] = true, ["--mask-char"] = true, ["--entropy-threshold"] = true }
+local value_flags = { ["--backends"] = true, ["--mask-char"] = true, ["--entropy-threshold"] = true, ["--patterns"] = true, ["--patterns-file"] = true }
 
 M.help = [[
 rg-secrets: ripgrep with secrets masked (display only, files are never changed)
@@ -15,19 +15,23 @@ rg-secrets: ripgrep with secrets masked (display only, files are never changed)
 Usage: rg-secrets [secrets options] [rg options] PATTERN [PATH]...
 
 Secrets options (consumed here, everything else goes to rg):
+  --help, -h             Show this help (--secrets-help is an alias)
+  --rg-help              Show rg's own help
   --reveal               Don't mask anything (same as RG_SECRETS=0)
   --backends LIST        Comma list of: lua, ripsecrets, betterleaks (default: lua)
   --mask-char CHAR       Character used for masking (default: •)
   --no-entropy           Disable the entropy check (lua backend)
   --entropy-threshold N  Bits per character that count as high entropy (default: 4.0)
+  --patterns LIST        Comma list of custom glob patterns, e.g. "acme_*,*_secret"
+  --patterns-file PATH   File of glob patterns, one per line, `#` for comments
 
 Output is captured from rg and masked before it is printed, so colours, headings, context
 lines and --line-number/--column are kept. --json is masked too (the redundant bytes field
-is dropped). Modes that don't print file contents (--version, --help) run untouched.
+is dropped). Modes that don't print file contents (--version) run untouched.
 
 Environment: RG_SECRETS=0 disables masking; RG_SECRETS_BACKENDS, RG_SECRETS_MASK_CHAR,
-RG_SECRETS_<BACKEND>_CMD (e.g. RG_SECRETS_BETTERLEAKS_CMD) set the same options;
-RG_SECRETS_RG picks the ripgrep executable.
+RG_SECRETS_PATTERNS, RG_SECRETS_PATTERNS_FILE, RG_SECRETS_<BACKEND>_CMD (e.g.
+RG_SECRETS_BETTERLEAKS_CMD) set the same options; RG_SECRETS_RG picks the ripgrep executable.
 ]]
 
 local function fail(msg)
@@ -40,6 +44,10 @@ local function set_option(opts, flag, value)
     opts.config.backends = vim.split(value, ",", { plain = true, trimempty = true })
   elseif flag == "--mask-char" then
     opts.config.mask_char = value ~= "" and vim.fn.strcharpart(value, 0, 1) or opts.config.mask_char
+  elseif flag == "--patterns" then
+    opts.config.patterns = vim.split(value, ",", { plain = true, trimempty = true })
+  elseif flag == "--patterns-file" then
+    opts.config.patterns_file = value
   else
     opts.config.entropy_threshold = tonumber(value) or fail("--entropy-threshold needs a number")
   end
@@ -93,6 +101,12 @@ function M.parse(argv)
   end
   if env.RG_SECRETS_MASK_CHAR then
     set_option(opts, "--mask-char", env.RG_SECRETS_MASK_CHAR)
+  end
+  if env.RG_SECRETS_PATTERNS then
+    set_option(opts, "--patterns", env.RG_SECRETS_PATTERNS)
+  end
+  if env.RG_SECRETS_PATTERNS_FILE then
+    set_option(opts, "--patterns-file", env.RG_SECRETS_PATTERNS_FILE)
   end
   for name in pairs(require("secrets.scanners").defs) do
     opts.config.commands[name] = env["RG_SECRETS_" .. name:upper() .. "_CMD"]
@@ -151,10 +165,35 @@ function M.mask_json(text, config)
   return table.concat(out, "\n")
 end
 
+-- Does `argv` contain `flag` before the first `--`? Arguments after `--` are data (a pattern
+-- or file name), not flags, so they must not trigger help or a passthrough rewrite.
+local function has_flag(argv, flag)
+  for _, a in ipairs(argv) do
+    if a == "--" then
+      return false
+    end
+    if a == flag then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param argv string[]
 ---@return integer exit code
 function M.main(argv)
-  if vim.tbl_contains(argv, "--secrets-help") then
+  if has_flag(argv, "--rg-help") then
+    -- rewrite to --help so the passthrough below runs rg's own help
+    local rewritten = {}
+    for i, a in ipairs(argv) do
+      if a == "--" then
+        vim.list_extend(rewritten, argv, i)
+        break
+      end
+      rewritten[#rewritten + 1] = a == "--rg-help" and "--help" or a
+    end
+    argv = rewritten
+  elseif has_flag(argv, "--help") or has_flag(argv, "-h") or has_flag(argv, "--secrets-help") then
     io.stdout:write(M.help)
     return 0
   end

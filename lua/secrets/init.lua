@@ -15,6 +15,8 @@ local defaults = {
   scan_delay = 150, -- ms to wait after a change before running an external scanner
   entropy = true, -- also flag high-entropy quoted strings (lua backend)
   entropy_threshold = 4.0,
+  patterns = {}, -- custom glob patterns, e.g. { "acme_*", "*_secret" } (lua backend)
+  patterns_file = nil, -- path to a file of glob patterns, one per line, `#` for comments
   max_lines = 20000, -- skip private-key scanning above this many lines
   disabled_filetypes = {},
 }

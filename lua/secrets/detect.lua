@@ -22,11 +22,59 @@ local entropy_pat = [=[\v["']\zs[A-Za-z0-9+/_=-]{20,}\ze["']]=]
 local placeholders = { "true", "false", "nil", "null", "none", "changeme", "example", "xxxxxx" }
 
 local compiled
+local pattern_cache -- { signature: string, patterns: string[] }
 
-local function compile()
-  compiled = { assignment = vim.regex(assignment_pat), entropy = vim.regex(entropy_pat), tokens = {} }
+-- Characters that separate a token from the text around it. Used when a glob pattern contains a
+-- `*` or `?`, so a wildcard stops at quotes, spaces and punctuation rather than swallowing the line.
+local glob_boundary = [=[^[:space:]"'`=,;:(){}<>*?|\\/]=]
+
+---Turn one glob pattern (`*` = any run of non-separator characters, `?` = one) into a Vim regex.
+---The match is anchored with `<`/`>` word boundaries when the glob starts/ends with a word
+---character, so a pattern like `acme_*` does not fire inside `xacme_y`. A glob that ends in `*`
+---or `?` is left unanchored at that end, so `key-???` matches a three-character suffix rather
+---than requiring a boundary after a fixed number of characters. The glob itself is bracketed with
+---`\zs`/`\ze` so only it is masked.
+---@param glob string
+---@return string
+local function glob_to_pattern(glob)
+  local out = { [=[\v]=] }
+  local function word_char(c)
+    return c ~= nil and c:match("[%w_]")
+  end
+  if word_char(glob:sub(1, 1)) then
+    out[#out + 1] = "<"
+  end
+  out[#out + 1] = [=[\zs]=]
+  local i = 1
+  while i <= #glob do
+    local c = glob:sub(i, i)
+    if c == "*" then
+      out[#out + 1] = "[" .. glob_boundary .. "]*"
+    elseif c == "?" then
+      out[#out + 1] = "[" .. glob_boundary .. "]"
+    else
+      -- escape the characters that are special in a "very magic" regex so they match literally
+      out[#out + 1] = (c:gsub("[$*.~%[%](){}+^\\/?|<>]", "\\%0"))
+    end
+    i = i + 1
+  end
+  out[#out + 1] = [=[\ze]=]
+  if word_char(glob:sub(-1)) then
+    out[#out + 1] = ">"
+  end
+  return table.concat(out)
+end
+
+local function compile(patterns)
+  compiled = { assignment = vim.regex(assignment_pat), entropy = vim.regex(entropy_pat), tokens = {}, custom = {} }
   for _, t in ipairs(token_patterns) do
     table.insert(compiled.tokens, vim.regex(t.pat))
+  end
+  for _, glob in ipairs(patterns or {}) do
+    local ok, re = pcall(vim.regex, glob_to_pattern(glob))
+    if ok then
+      table.insert(compiled.custom, re)
+    end
   end
 end
 
@@ -70,22 +118,66 @@ local function each_match(re, line, fn)
   end
 end
 
+---Read a patterns file: one glob per line, `#` comments and blank lines ignored.
+---@param path string
+---@return string[]
+function M.load_patterns_file(path)
+  local f = io.open(vim.fn.expand(path), "r")
+  if not f then
+    return {}
+  end
+  local patterns = {}
+  for line in f:lines() do
+    local pat = vim.trim(line)
+    if pat ~= "" and pat:sub(1, 1) ~= "#" then
+      table.insert(patterns, pat)
+    end
+  end
+  f:close()
+  return patterns
+end
+
+---Merge `config.patterns` with the patterns in `config.patterns_file` (if any). The merged list
+---is cached by the `patterns`/`patterns_file` inputs, so mutating a config table (as the front
+---ends and tests do) is still picked up, while per-line calls don't re-read the file.
+---@param config table
+---@return string[]
+function M.resolve_patterns(config)
+  local patterns = config.patterns or {}
+  local signature = table.concat(patterns, "\0") .. "\1" .. (config.patterns_file or "")
+  if pattern_cache and pattern_cache.signature == signature then
+    return pattern_cache.patterns
+  end
+  local merged = vim.deepcopy(patterns)
+  if config.patterns_file then
+    vim.list_extend(merged, M.load_patterns_file(config.patterns_file))
+  end
+  pattern_cache = { signature = signature, patterns = merged }
+  return merged
+end
+
 ---Find secret-looking spans in one line.
 ---@param line string
----@param opts { entropy: boolean, entropy_threshold: number }
+---@param opts { entropy: boolean, entropy_threshold: number, patterns?: string[] }
 ---@return { [1]: integer, [2]: integer }[] spans 0-based byte [start, end) pairs, sorted and non-overlapping
 function M.find(line, opts)
-  if not compiled then
-    compile()
+  local patterns = M.resolve_patterns(opts)
+  local signature = table.concat(patterns, "\0")
+  if not compiled or compiled.signature ~= signature then
+    compile(patterns)
+    compiled.signature = signature
   end
   local spans = {}
   local function add(s, e)
-    if not is_placeholder(line:sub(s + 1, e)) then
+    if s < e and not is_placeholder(line:sub(s + 1, e)) then
       table.insert(spans, { s, e })
     end
   end
 
   for _, re in ipairs(compiled.tokens) do
+    each_match(re, line, add)
+  end
+  for _, re in ipairs(compiled.custom) do
     each_match(re, line, add)
   end
   each_match(compiled.assignment, line, function(s, e)
